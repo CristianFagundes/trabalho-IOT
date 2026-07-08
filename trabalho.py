@@ -1,23 +1,19 @@
 import serial
-
-
 import sqlite3
 from datetime import datetime
 
-porta = input("Digite a porta do Arduino, exemplo COM3: ")
-
-arduino = serial.Serial(porta, 9600)
-
-banco = sqlite3.connect("dados_potenciometro.db")
-cursor = banco.cursor()
-
 try:
+    porta = input("Digite a porta do Arduino, exemplo COM3: ")
+    arduino = serial.Serial(porta, 9600)
+
+    banco = sqlite3.connect("dados_da_tabela_do_cristian.db")
+    cursor = banco.cursor()
     while True:
         linha = arduino.readline().decode().strip()
         if linha != "":
             dados = linha.split(";")
             if len(dados) == 2:
-                valor_adc = int(dados[0])
+                valor_adc = float(dados[0])
                 tensao = float(dados[1])
                 data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 cursor.execute("""
