@@ -1,30 +1,22 @@
 """
 sistema_sensor.py
-Tudo em um arquivo só: leitura do Arduino, banco de dados e servidor web
-com relatórios/gráficos históricos.
+Versão 100% terminal (sem servidor web), pensada pra rodar sozinho na
+máquina da faculdade, só com o sensor ligado por USB.
 
-Como usar:
-
-  1) Rodar o servidor web (dashboard + API):
-       python sistema_sensor.py servidor
-
-  2) Rodar o coletor (lê o Arduino e grava no banco):
-       python sistema_sensor.py coletor
-
-Rode os dois ao mesmo tempo (em dois terminais). Se forem máquinas
-diferentes, os dois precisam enxergar o mesmo arquivo .db (ex: pasta
-compartilhada) ou rode tudo na mesma máquina (ex: um Raspberry Pi
-ligado no Arduino, funcionando como servidor).
+Funcionalidades (tudo pelo menu):
+  1. Coletar dados do Arduino e gravar no banco
+  2. Ver estatísticas de um período (min / máx / média)
+  3. Ver gráfico histórico (abre uma janela com o gráfico, via matplotlib)
+  4. Exportar relatório em CSV
+  5. Sair
 
 Dependências:
-    pip install flask pyserial gunicorn
+    pip install pyserial matplotlib
 """
 
 import csv
-import io
-import sys
-import time
 import sqlite3
+import time
 from contextlib import contextmanager
 from datetime import datetime
 
@@ -67,20 +59,23 @@ def inserir_leitura(data_hora, valor_adc, tensao):
         banco.commit()
 
 
-def buscar_leituras(inicio=None, fim=None, limite=1000):
+def _montar_where(inicio, fim):
+    condicoes, parametros = [], []
+    if inicio:
+        condicoes.append("data_hora >= ?")
+        parametros.append(inicio)
+    if fim:
+        condicoes.append("data_hora <= ?")
+        parametros.append(fim)
+    where = f"WHERE {' AND '.join(condicoes)}" if condicoes else ""
+    return where, parametros
+
+
+def buscar_leituras(inicio=None, fim=None, limite=1_000_000):
     with conectar() as banco:
         banco.row_factory = sqlite3.Row
         cursor = banco.cursor()
-
-        condicoes, parametros = [], []
-        if inicio:
-            condicoes.append("data_hora >= ?")
-            parametros.append(inicio)
-        if fim:
-            condicoes.append("data_hora <= ?")
-            parametros.append(fim)
-        where = f"WHERE {' AND '.join(condicoes)}" if condicoes else ""
-
+        where, parametros = _montar_where(inicio, fim)
         cursor.execute(f"""
             SELECT id, data_hora, valor_adc, tensao
             FROM leituras
@@ -88,7 +83,6 @@ def buscar_leituras(inicio=None, fim=None, limite=1000):
             ORDER BY data_hora ASC
             LIMIT ?
         """, (*parametros, limite))
-
         return [dict(linha) for linha in cursor.fetchall()]
 
 
@@ -96,16 +90,7 @@ def buscar_estatisticas(inicio=None, fim=None):
     with conectar() as banco:
         banco.row_factory = sqlite3.Row
         cursor = banco.cursor()
-
-        condicoes, parametros = [], []
-        if inicio:
-            condicoes.append("data_hora >= ?")
-            parametros.append(inicio)
-        if fim:
-            condicoes.append("data_hora <= ?")
-            parametros.append(fim)
-        where = f"WHERE {' AND '.join(condicoes)}" if condicoes else ""
-
+        where, parametros = _montar_where(inicio, fim)
         cursor.execute(f"""
             SELECT
                 COUNT(*) AS total,
@@ -118,7 +103,6 @@ def buscar_estatisticas(inicio=None, fim=None):
             FROM leituras
             {where}
         """, parametros)
-
         return dict(cursor.fetchone())
 
 
@@ -126,16 +110,7 @@ def buscar_media_por_hora(inicio=None, fim=None):
     with conectar() as banco:
         banco.row_factory = sqlite3.Row
         cursor = banco.cursor()
-
-        condicoes, parametros = [], []
-        if inicio:
-            condicoes.append("data_hora >= ?")
-            parametros.append(inicio)
-        if fim:
-            condicoes.append("data_hora <= ?")
-            parametros.append(fim)
-        where = f"WHERE {' AND '.join(condicoes)}" if condicoes else ""
-
+        where, parametros = _montar_where(inicio, fim)
         cursor.execute(f"""
             SELECT
                 substr(data_hora, 1, 13) AS hora,
@@ -147,7 +122,6 @@ def buscar_media_por_hora(inicio=None, fim=None):
             GROUP BY hora
             ORDER BY hora ASC
         """, parametros)
-
         return [dict(linha) for linha in cursor.fetchall()]
 
 
@@ -168,14 +142,13 @@ def conectar_arduino(porta, baudrate=9600):
             time.sleep(INTERVALO_RECONEXAO_SEGUNDOS)
 
 
-def rodar_coletor():
+def opcao_coletar():
     import serial
 
-    criar_tabela()
     porta = input("Digite a porta do Arduino, exemplo COM3: ").strip()
     arduino = conectar_arduino(porta)
 
-    print("Coletando dados. Pressione Ctrl+C para parar.")
+    print("Coletando dados. Pressione Ctrl+C para parar e voltar ao menu.\n")
 
     try:
         while True:
@@ -206,253 +179,147 @@ def rodar_coletor():
             print(f"{data_hora} | ADC: {valor_adc} | Tensao: {tensao:.2f} V")
 
     except KeyboardInterrupt:
-        print("\nPrograma encerrado pelo usuario.")
+        print("\nColeta pausada. Voltando ao menu.")
     finally:
         arduino.close()
-        print("Conexao serial fechada.")
 
 
 # =========================================================
-# SERVIDOR WEB (Dashboard + API + Relatório)
+# RELATÓRIOS / GRÁFICOS (tudo no terminal)
 # =========================================================
 
-PAGINA_DASHBOARD = """
-<!DOCTYPE html>
-<html lang="pt-br">
-<head>
-<meta charset="UTF-8">
-<title>Monitoramento do Sensor</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
-<style>
-    body { font-family: Arial, sans-serif; background: #f4f6f8; margin: 0; padding: 24px; color: #222; }
-    h1 { font-size: 22px; margin-bottom: 4px; }
-    .subtitulo { color: #666; margin-bottom: 24px; }
-    .cartoes { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 24px; }
-    .cartao { background: white; border-radius: 8px; padding: 16px 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); min-width: 150px; }
-    .cartao .valor { font-size: 22px; font-weight: bold; }
-    .cartao .rotulo { font-size: 12px; color: #777; text-transform: uppercase; }
-    .filtros { background: white; padding: 16px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 24px; display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
-    .filtros label { display: block; font-size: 12px; color: #555; margin-bottom: 4px; }
-    .filtros input, .filtros select, .filtros button { padding: 8px; border-radius: 4px; border: 1px solid #ccc; font-size: 14px; }
-    .filtros button { background: #2563eb; color: white; border: none; cursor: pointer; }
-    .filtros button:hover { background: #1d4ed8; }
-    .filtros a.botao-csv { background: #16a34a; color: white; padding: 8px 12px; border-radius: 4px; text-decoration: none; font-size: 14px; }
-    .grafico-container { background: white; padding: 16px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 24px; }
-    table { width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; }
-    th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid #eee; font-size: 13px; }
-    th { background: #f0f0f0; }
-</style>
-</head>
-<body>
-
-<h1>Monitoramento do Sensor</h1>
-<div class="subtitulo">Histórico de leituras (ADC / Tensão)</div>
-
-<div class="filtros">
-    <div>
-        <label>Data/hora início</label>
-        <input type="datetime-local" id="inicio">
-    </div>
-    <div>
-        <label>Data/hora fim</label>
-        <input type="datetime-local" id="fim">
-    </div>
-    <div>
-        <label>Agrupamento</label>
-        <select id="agrupamento">
-            <option value="bruto">Leituras individuais</option>
-            <option value="hora" selected>Média por hora</option>
-        </select>
-    </div>
-    <button onclick="atualizarTudo()">Aplicar filtro</button>
-    <a class="botao-csv" id="link-csv" href="/relatorio/csv" target="_blank">Baixar CSV</a>
-</div>
-
-<div class="cartoes" id="cartoes">
-    <div class="cartao"><div class="valor" id="c-total">--</div><div class="rotulo">Registros</div></div>
-    <div class="cartao"><div class="valor" id="c-tensao-media">--</div><div class="rotulo">Tensão média (V)</div></div>
-    <div class="cartao"><div class="valor" id="c-tensao-min">--</div><div class="rotulo">Tensão mínima (V)</div></div>
-    <div class="cartao"><div class="valor" id="c-tensao-max">--</div><div class="rotulo">Tensão máxima (V)</div></div>
-</div>
-
-<div class="grafico-container">
-    <canvas id="grafico" height="90"></canvas>
-</div>
-
-<div class="grafico-container">
-    <h3 style="margin-top:0;">Últimas leituras</h3>
-    <table id="tabela-leituras">
-        <thead><tr><th>Data/hora</th><th>Valor ADC</th><th>Tensão (V)</th></tr></thead>
-        <tbody></tbody>
-    </table>
-</div>
-
-<script>
-let grafico = null;
-
-function paramsPeriodo() {
-    const inicio = document.getElementById('inicio').value.replace('T', ' ');
-    const fim = document.getElementById('fim').value.replace('T', ' ');
-    const params = new URLSearchParams();
-    if (inicio) params.append('inicio', inicio + ':00');
-    if (fim) params.append('fim', fim + ':00');
-    return params;
-}
-
-async function atualizarCartoes() {
-    const params = paramsPeriodo();
-    const resp = await fetch('/api/estatisticas?' + params.toString());
-    const stats = await resp.json();
-    document.getElementById('c-total').innerText = stats.total ?? 0;
-    document.getElementById('c-tensao-media').innerText = stats.tensao_media ? stats.tensao_media.toFixed(2) : '--';
-    document.getElementById('c-tensao-min').innerText = stats.tensao_min ? stats.tensao_min.toFixed(2) : '--';
-    document.getElementById('c-tensao-max').innerText = stats.tensao_max ? stats.tensao_max.toFixed(2) : '--';
-}
-
-async function atualizarGrafico() {
-    const agrupamento = document.getElementById('agrupamento').value;
-    const params = paramsPeriodo();
-    let labels = [], tensoes = [], adcs = [];
-
-    if (agrupamento === 'hora') {
-        const resp = await fetch('/api/media_por_hora?' + params.toString());
-        const dados = await resp.json();
-        labels = dados.map(d => d.hora);
-        tensoes = dados.map(d => d.tensao_media);
-        adcs = dados.map(d => d.adc_media);
-    } else {
-        params.append('limite', 2000);
-        const resp = await fetch('/api/leituras?' + params.toString());
-        const dados = await resp.json();
-        labels = dados.map(d => d.data_hora);
-        tensoes = dados.map(d => d.tensao);
-        adcs = dados.map(d => d.valor_adc);
-    }
-
-    if (grafico) grafico.destroy();
-    const ctx = document.getElementById('grafico').getContext('2d');
-    grafico = new Chart(ctx, {
-        type: 'line',
-        data: {
-            labels: labels,
-            datasets: [
-                { label: 'Tensão (V)', data: tensoes, borderColor: '#2563eb', backgroundColor: 'rgba(37,99,235,0.1)', tension: 0.2, pointRadius: 0 },
-                { label: 'Valor ADC', data: adcs, borderColor: '#f59e0b', backgroundColor: 'rgba(245,158,11,0.1)', tension: 0.2, pointRadius: 0, yAxisID: 'y1' }
-            ]
-        },
-        options: {
-            responsive: true,
-            interaction: { mode: 'index', intersect: false },
-            scales: {
-                y: { title: { display: true, text: 'Tensão (V)' } },
-                y1: { position: 'right', title: { display: true, text: 'Valor ADC' }, grid: { drawOnChartArea: false } }
-            }
-        }
-    });
-}
-
-async function atualizarTabela() {
-    const params = paramsPeriodo();
-    params.append('limite', 20);
-    const resp = await fetch('/api/leituras?' + params.toString());
-    let dados = await resp.json();
-    dados = dados.slice(-20).reverse();
-
-    const corpo = document.querySelector('#tabela-leituras tbody');
-    corpo.innerHTML = '';
-    for (const linha of dados) {
-        const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${linha.data_hora}</td><td>${linha.valor_adc}</td><td>${linha.tensao.toFixed(2)}</td>`;
-        corpo.appendChild(tr);
-    }
-}
-
-function atualizarLinkCsv() {
-    const params = paramsPeriodo();
-    document.getElementById('link-csv').href = '/relatorio/csv?' + params.toString();
-}
-
-function atualizarTudo() {
-    atualizarCartoes();
-    atualizarGrafico();
-    atualizarTabela();
-    atualizarLinkCsv();
-}
-
-atualizarTudo();
-setInterval(atualizarTudo, 30000);
-</script>
-
-</body>
-</html>
-"""
+def pedir_periodo():
+    """Pergunta um período opcional. Enter em branco = sem filtro."""
+    print("\n(deixe em branco pra não filtrar por data)")
+    inicio = input("Data/hora início (YYYY-MM-DD HH:MM:SS): ").strip() or None
+    fim = input("Data/hora fim    (YYYY-MM-DD HH:MM:SS): ").strip() or None
+    return inicio, fim
 
 
-def rodar_servidor():
-    from flask import Flask, jsonify, request, Response
+def opcao_estatisticas():
+    inicio, fim = pedir_periodo()
+    stats = buscar_estatisticas(inicio=inicio, fim=fim)
 
-    app = Flask(__name__)
-    criar_tabela()
+    print("\n===== ESTATÍSTICAS DO PERÍODO =====")
+    if not stats["total"]:
+        print("Nenhuma leitura encontrada nesse período.")
+        return
 
-    @app.route("/")
-    def dashboard():
-        return PAGINA_DASHBOARD
+    print(f"Total de registros : {stats['total']}")
+    print(f"Tensão mínima       : {stats['tensao_min']:.2f} V")
+    print(f"Tensão máxima       : {stats['tensao_max']:.2f} V")
+    print(f"Tensão média        : {stats['tensao_media']:.2f} V")
+    print(f"ADC mínimo          : {stats['adc_min']:.0f}")
+    print(f"ADC máximo          : {stats['adc_max']:.0f}")
+    print(f"ADC médio           : {stats['adc_media']:.1f}")
+    print("====================================\n")
 
-    @app.route("/api/leituras")
-    def api_leituras():
-        inicio = request.args.get("inicio")
-        fim = request.args.get("fim")
-        limite = int(request.args.get("limite", 1000))
-        return jsonify(buscar_leituras(inicio=inicio, fim=fim, limite=limite))
 
-    @app.route("/api/media_por_hora")
-    def api_media_por_hora():
-        inicio = request.args.get("inicio")
-        fim = request.args.get("fim")
-        return jsonify(buscar_media_por_hora(inicio=inicio, fim=fim))
+def opcao_grafico():
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("\nO matplotlib não está instalado. Rode: pip install matplotlib\n")
+        return
 
-    @app.route("/api/estatisticas")
-    def api_estatisticas():
-        inicio = request.args.get("inicio")
-        fim = request.args.get("fim")
-        return jsonify(buscar_estatisticas(inicio=inicio, fim=fim))
+    inicio, fim = pedir_periodo()
 
-    @app.route("/relatorio/csv")
-    def relatorio_csv():
-        inicio = request.args.get("inicio")
-        fim = request.args.get("fim")
-        dados = buscar_leituras(inicio=inicio, fim=fim, limite=1_000_000)
+    print("Agrupamento: [1] leituras individuais  [2] média por hora")
+    escolha = input("Escolha (1/2, padrão 2): ").strip() or "2"
 
-        buffer = io.StringIO()
-        escritor = csv.writer(buffer)
+    if escolha == "1":
+        dados = buscar_leituras(inicio=inicio, fim=fim)
+        eixo_x = [d["data_hora"] for d in dados]
+        tensao = [d["tensao"] for d in dados]
+        adc = [d["valor_adc"] for d in dados]
+    else:
+        dados = buscar_media_por_hora(inicio=inicio, fim=fim)
+        eixo_x = [d["hora"] for d in dados]
+        tensao = [d["tensao_media"] for d in dados]
+        adc = [d["adc_media"] for d in dados]
+
+    if not dados:
+        print("Nenhuma leitura encontrada nesse período.\n")
+        return
+
+    # Se tiver muitos pontos, mostra só alguns rótulos no eixo X pra não poluir
+    passo_rotulo = max(1, len(eixo_x) // 15)
+
+    fig, eixo1 = plt.subplots(figsize=(10, 5))
+    eixo1.plot(eixo_x, tensao, color="tab:blue", label="Tensão (V)")
+    eixo1.set_xlabel("Data/hora")
+    eixo1.set_ylabel("Tensão (V)", color="tab:blue")
+    eixo1.tick_params(axis="y", labelcolor="tab:blue")
+    eixo1.set_xticks(eixo_x[::passo_rotulo])
+    eixo1.set_xticklabels(eixo_x[::passo_rotulo], rotation=45, ha="right", fontsize=8)
+
+    eixo2 = eixo1.twinx()
+    eixo2.plot(eixo_x, adc, color="tab:orange", label="Valor ADC")
+    eixo2.set_ylabel("Valor ADC", color="tab:orange")
+    eixo2.tick_params(axis="y", labelcolor="tab:orange")
+
+    plt.title("Histórico de leituras do sensor")
+    fig.tight_layout()
+    print("\nAbrindo janela do gráfico... (feche a janela pra voltar ao menu)")
+    plt.show()
+
+
+def opcao_exportar_csv():
+    inicio, fim = pedir_periodo()
+    dados = buscar_leituras(inicio=inicio, fim=fim)
+
+    if not dados:
+        print("Nenhuma leitura encontrada nesse período. Nada foi exportado.\n")
+        return
+
+    nome_arquivo = input("Nome do arquivo CSV (padrão: relatorio_leituras.csv): ").strip()
+    nome_arquivo = nome_arquivo or "relatorio_leituras.csv"
+    if not nome_arquivo.endswith(".csv"):
+        nome_arquivo += ".csv"
+
+    with open(nome_arquivo, "w", newline="", encoding="utf-8") as arquivo:
+        escritor = csv.writer(arquivo)
         escritor.writerow(["id", "data_hora", "valor_adc", "tensao"])
         for linha in dados:
             escritor.writerow([linha["id"], linha["data_hora"], linha["valor_adc"], linha["tensao"]])
 
-        return Response(
-            buffer.getvalue(),
-            mimetype="text/csv",
-            headers={"Content-Disposition": "attachment; filename=relatorio_leituras.csv"},
-        )
-
-    app.run(host="0.0.0.0", port=8000, debug=True)
+    print(f"Relatório exportado para '{nome_arquivo}' ({len(dados)} registros).\n")
 
 
 # =========================================================
-# PONTO DE ENTRADA
+# MENU PRINCIPAL
 # =========================================================
+
+def mostrar_menu():
+    print("""
+==================== SISTEMA DO SENSOR ====================
+ 1) Coletar dados do Arduino
+ 2) Ver estatisticas de um periodo (min/max/media)
+ 3) Ver grafico historico (janela matplotlib)
+ 4) Exportar relatorio em CSV
+ 5) Sair
+=============================================================""")
+
 
 def main():
-    if len(sys.argv) < 2 or sys.argv[1] not in ("servidor", "coletor"):
-        print("Uso:")
-        print("  python sistema_sensor.py servidor   -> sobe o dashboard/API")
-        print("  python sistema_sensor.py coletor    -> lê o Arduino e grava no banco")
-        sys.exit(1)
+    criar_tabela()
+    while True:
+        mostrar_menu()
+        opcao = input("Escolha uma opcao: ").strip()
 
-    if sys.argv[1] == "servidor":
-        rodar_servidor()
-    else:
-        rodar_coletor()
+        if opcao == "1":
+            opcao_coletar()
+        elif opcao == "2":
+            opcao_estatisticas()
+        elif opcao == "3":
+            opcao_grafico()
+        elif opcao == "4":
+            opcao_exportar_csv()
+        elif opcao == "5":
+            print("Encerrando. Ate mais!")
+            break
+        else:
+            print("Opcao invalida, tente de novo.\n")
 
 
 if __name__ == "__main__":
