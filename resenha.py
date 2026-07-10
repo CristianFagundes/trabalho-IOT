@@ -1,15 +1,10 @@
 """
 sistema_sensor.py
-Sistema 100% terminal (sem servidor web) pro sensor DHT11 (umidade e
-temperatura), ligado no Arduino via USB.
-
-O Arduino deve enviar pela serial uma linha por leitura, no formato:
-    umidade;temperatura
-Exemplo:
-    45.0;23.8
+Versão 100% terminal (sem servidor web), pensada pra rodar sozinho na
+máquina da faculdade, só com o sensor ligado por USB.
 
 Funcionalidades (tudo pelo menu):
-  1. Coletar dados do DHT11 e gravar no banco
+  1. Coletar dados do Arduino e gravar no banco
   2. Ver estatísticas de um período (min / máx / média)
   3. Ver gráfico histórico (abre uma janela com o gráfico, via matplotlib)
   4. Exportar relatório em CSV
@@ -17,30 +12,6 @@ Funcionalidades (tudo pelo menu):
 
 Dependências:
     pip install pyserial matplotlib
-
-Sketch de exemplo pro Arduino (usando a lib "DHT sensor library" da Adafruit):
-
-    #include <DHT.h>
-    #define PINO_DHT 2
-    DHT dht(PINO_DHT, DHT11);
-
-    void setup() {
-      Serial.begin(9600);
-      dht.begin();
-    }
-
-    void loop() {
-      float umidade = dht.readHumidity();
-      float temperatura = dht.readTemperature();
-
-      if (!isnan(umidade) && !isnan(temperatura)) {
-        Serial.print(umidade);
-        Serial.print(";");
-        Serial.println(temperatura);
-      }
-
-      delay(2000); // DHT11 não deve ser lido mais rápido que a cada ~2s
-    }
 """
 
 import csv
@@ -72,18 +43,18 @@ def criar_tabela():
             CREATE TABLE IF NOT EXISTS leituras (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 data_hora TEXT NOT NULL,
-                umidade REAL NOT NULL,
-                temperatura REAL NOT NULL
+                valor_adc REAL NOT NULL,
+                tensao REAL NOT NULL
             )
         """)
         banco.commit()
 
 
-def inserir_leitura(data_hora, umidade, temperatura):
+def inserir_leitura(data_hora, valor_adc, tensao):
     with conectar() as banco:
         banco.execute(
-            "INSERT INTO leituras (data_hora, umidade, temperatura) VALUES (?, ?, ?)",
-            (data_hora, umidade, temperatura),
+            "INSERT INTO leituras (data_hora, valor_adc, tensao) VALUES (?, ?, ?)",
+            (data_hora, valor_adc, tensao),
         )
         banco.commit()
 
@@ -106,7 +77,7 @@ def buscar_leituras(inicio=None, fim=None, limite=1_000_000):
         cursor = banco.cursor()
         where, parametros = _montar_where(inicio, fim)
         cursor.execute(f"""
-            SELECT id, data_hora, umidade, temperatura
+            SELECT id, data_hora, valor_adc, tensao
             FROM leituras
             {where}
             ORDER BY data_hora ASC
@@ -123,12 +94,12 @@ def buscar_estatisticas(inicio=None, fim=None):
         cursor.execute(f"""
             SELECT
                 COUNT(*) AS total,
-                MIN(temperatura) AS temperatura_min,
-                MAX(temperatura) AS temperatura_max,
-                AVG(temperatura) AS temperatura_media,
-                MIN(umidade) AS umidade_min,
-                MAX(umidade) AS umidade_max,
-                AVG(umidade) AS umidade_media
+                MIN(tensao) AS tensao_min,
+                MAX(tensao) AS tensao_max,
+                AVG(tensao) AS tensao_media,
+                MIN(valor_adc) AS adc_min,
+                MAX(valor_adc) AS adc_max,
+                AVG(valor_adc) AS adc_media
             FROM leituras
             {where}
         """, parametros)
@@ -143,8 +114,8 @@ def buscar_media_por_hora(inicio=None, fim=None):
         cursor.execute(f"""
             SELECT
                 substr(data_hora, 1, 13) AS hora,
-                AVG(temperatura) AS temperatura_media,
-                AVG(umidade) AS umidade_media,
+                AVG(tensao) AS tensao_media,
+                AVG(valor_adc) AS adc_media,
                 COUNT(*) AS total
             FROM leituras
             {where}
@@ -155,7 +126,7 @@ def buscar_media_por_hora(inicio=None, fim=None):
 
 
 # =========================================================
-# COLETOR (Arduino/DHT11 -> Banco)
+# COLETOR (Arduino -> Banco)
 # =========================================================
 
 def conectar_arduino(porta, baudrate=9600):
@@ -177,7 +148,7 @@ def opcao_coletar():
     porta = input("Digite a porta do Arduino, exemplo COM3: ").strip()
     arduino = conectar_arduino(porta)
 
-    print("Coletando dados do DHT11. Pressione Ctrl+C para parar e voltar ao menu.\n")
+    print("Coletando dados. Pressione Ctrl+C para parar e voltar ao menu.\n")
 
     try:
         while True:
@@ -197,15 +168,15 @@ def opcao_coletar():
                 continue
 
             try:
-                umidade = float(dados[0])
-                temperatura = float(dados[1])
+                valor_adc = float(dados[0])
+                tensao = float(dados[1])
             except ValueError:
                 print("Linha com valores não numéricos, ignorada:", linha_bruta)
                 continue
 
             data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            inserir_leitura(data_hora, umidade, temperatura)
-            print(f"{data_hora} | Umidade: {umidade:.1f}% | Temperatura: {temperatura:.1f} °C")
+            inserir_leitura(data_hora, valor_adc, tensao)
+            print(f"{data_hora} | ADC: {valor_adc} | Tensao: {tensao:.2f} V")
 
     except KeyboardInterrupt:
         print("\nColeta pausada. Voltando ao menu.")
@@ -234,13 +205,13 @@ def opcao_estatisticas():
         print("Nenhuma leitura encontrada nesse período.")
         return
 
-    print(f"Total de registros    : {stats['total']}")
-    print(f"Temperatura mínima    : {stats['temperatura_min']:.1f} °C")
-    print(f"Temperatura máxima    : {stats['temperatura_max']:.1f} °C")
-    print(f"Temperatura média     : {stats['temperatura_media']:.1f} °C")
-    print(f"Umidade mínima        : {stats['umidade_min']:.1f} %")
-    print(f"Umidade máxima        : {stats['umidade_max']:.1f} %")
-    print(f"Umidade média         : {stats['umidade_media']:.1f} %")
+    print(f"Total de registros : {stats['total']}")
+    print(f"Tensão mínima       : {stats['tensao_min']:.2f} V")
+    print(f"Tensão máxima       : {stats['tensao_max']:.2f} V")
+    print(f"Tensão média        : {stats['tensao_media']:.2f} V")
+    print(f"ADC mínimo          : {stats['adc_min']:.0f}")
+    print(f"ADC máximo          : {stats['adc_max']:.0f}")
+    print(f"ADC médio           : {stats['adc_media']:.1f}")
     print("====================================\n")
 
 
@@ -259,13 +230,13 @@ def opcao_grafico():
     if escolha == "1":
         dados = buscar_leituras(inicio=inicio, fim=fim)
         eixo_x = [d["data_hora"] for d in dados]
-        temperatura = [d["temperatura"] for d in dados]
-        umidade = [d["umidade"] for d in dados]
+        tensao = [d["tensao"] for d in dados]
+        adc = [d["valor_adc"] for d in dados]
     else:
         dados = buscar_media_por_hora(inicio=inicio, fim=fim)
         eixo_x = [d["hora"] for d in dados]
-        temperatura = [d["temperatura_media"] for d in dados]
-        umidade = [d["umidade_media"] for d in dados]
+        tensao = [d["tensao_media"] for d in dados]
+        adc = [d["adc_media"] for d in dados]
 
     if not dados:
         print("Nenhuma leitura encontrada nesse período.\n")
@@ -275,19 +246,19 @@ def opcao_grafico():
     passo_rotulo = max(1, len(eixo_x) // 15)
 
     fig, eixo1 = plt.subplots(figsize=(10, 5))
-    eixo1.plot(eixo_x, temperatura, color="tab:red", label="Temperatura (°C)")
+    eixo1.plot(eixo_x, tensao, color="tab:blue", label="Tensão (V)")
     eixo1.set_xlabel("Data/hora")
-    eixo1.set_ylabel("Temperatura (°C)", color="tab:red")
-    eixo1.tick_params(axis="y", labelcolor="tab:red")
+    eixo1.set_ylabel("Tensão (V)", color="tab:blue")
+    eixo1.tick_params(axis="y", labelcolor="tab:blue")
     eixo1.set_xticks(eixo_x[::passo_rotulo])
     eixo1.set_xticklabels(eixo_x[::passo_rotulo], rotation=45, ha="right", fontsize=8)
 
     eixo2 = eixo1.twinx()
-    eixo2.plot(eixo_x, umidade, color="tab:blue", label="Umidade (%)")
-    eixo2.set_ylabel("Umidade (%)", color="tab:blue")
-    eixo2.tick_params(axis="y", labelcolor="tab:blue")
+    eixo2.plot(eixo_x, adc, color="tab:orange", label="Valor ADC")
+    eixo2.set_ylabel("Valor ADC", color="tab:orange")
+    eixo2.tick_params(axis="y", labelcolor="tab:orange")
 
-    plt.title("Histórico de temperatura e umidade (DHT11)")
+    plt.title("Histórico de leituras do sensor")
     fig.tight_layout()
     print("\nAbrindo janela do gráfico... (feche a janela pra voltar ao menu)")
     plt.show()
@@ -308,9 +279,9 @@ def opcao_exportar_csv():
 
     with open(nome_arquivo, "w", newline="", encoding="utf-8") as arquivo:
         escritor = csv.writer(arquivo)
-        escritor.writerow(["id", "data_hora", "umidade", "temperatura"])
+        escritor.writerow(["id", "data_hora", "valor_adc", "tensao"])
         for linha in dados:
-            escritor.writerow([linha["id"], linha["data_hora"], linha["umidade"], linha["temperatura"]])
+            escritor.writerow([linha["id"], linha["data_hora"], linha["valor_adc"], linha["tensao"]])
 
     print(f"Relatório exportado para '{nome_arquivo}' ({len(dados)} registros).\n")
 
@@ -321,13 +292,13 @@ def opcao_exportar_csv():
 
 def mostrar_menu():
     print("""
-================= SISTEMA DHT11 (TEMP/UMIDADE) =================
- 1) Coletar dados do sensor
+==================== SISTEMA DO SENSOR ====================
+ 1) Coletar dados do Arduino
  2) Ver estatisticas de um periodo (min/max/media)
  3) Ver grafico historico (janela matplotlib)
  4) Exportar relatorio em CSV
  5) Sair
-===================================================================""")
+=============================================================""")
 
 
 def main():
