@@ -1,48 +1,3 @@
-"""
-sistema_sensor.py
-Sistema 100% terminal (sem servidor web) pro sensor DHT11 (umidade e
-temperatura), ligado no Arduino via USB.
-
-O Arduino deve enviar pela serial uma linha por leitura, no formato:
-    umidade;temperatura
-Exemplo:
-    45.0;23.8
-
-Funcionalidades (tudo pelo menu):
-  1. Coletar dados do DHT11 e gravar no banco
-  2. Ver estatísticas de um período (min / máx / média)
-  3. Ver gráfico histórico (abre uma janela com o gráfico, via matplotlib)
-  4. Exportar relatório em CSV
-  5. Sair
-
-Dependências:
-    pip install pyserial matplotlib
-
-Sketch de exemplo pro Arduino (usando a lib "DHT sensor library" da Adafruit):
-
-    #include <DHT.h>
-    #define PINO_DHT 2
-    DHT dht(PINO_DHT, DHT11);
-
-    void setup() {
-      Serial.begin(9600);
-      dht.begin();
-    }
-
-    void loop() {
-      float umidade = dht.readHumidity();
-      float temperatura = dht.readTemperature();
-
-      if (!isnan(umidade) && !isnan(temperatura)) {
-        Serial.print(umidade);
-        Serial.print(";");
-        Serial.println(temperatura);
-      }
-
-      delay(2000); // DHT11 não deve ser lido mais rápido que a cada ~2s
-    }
-"""
-
 import csv
 import sqlite3
 import time
@@ -65,7 +20,7 @@ def conectar():
     finally:
         banco.close()
 
-
+# criando o banco de dados, se ele nao existir ele cria se nao ele conecta
 def criar_tabela():
     with conectar() as banco:
         banco.execute("""
@@ -78,7 +33,7 @@ def criar_tabela():
         """)
         banco.commit()
 
-
+# colocando os dados do sensor no banco de dados
 def inserir_leitura(data_hora, umidade, temperatura):
     with conectar() as banco:
         banco.execute(
@@ -87,7 +42,7 @@ def inserir_leitura(data_hora, umidade, temperatura):
         )
         banco.commit()
 
-
+# nao sei
 def _montar_where(inicio, fim):
     condicoes, parametros = [], []
     if inicio:
@@ -99,7 +54,7 @@ def _montar_where(inicio, fim):
     where = f"WHERE {' AND '.join(condicoes)}" if condicoes else ""
     return where, parametros
 
-
+# nao sei
 def buscar_leituras(inicio=None, fim=None, limite=1_000_000):
     with conectar() as banco:
         banco.row_factory = sqlite3.Row
@@ -114,7 +69,7 @@ def buscar_leituras(inicio=None, fim=None, limite=1_000_000):
         """, (*parametros, limite))
         return [dict(linha) for linha in cursor.fetchall()]
 
-
+# buscando estatisticas
 def buscar_estatisticas(inicio=None, fim=None):
     with conectar() as banco:
         banco.row_factory = sqlite3.Row
@@ -134,7 +89,7 @@ def buscar_estatisticas(inicio=None, fim=None):
         """, parametros)
         return dict(cursor.fetchone())
 
-
+# buscando media por hora
 def buscar_media_por_hora(inicio=None, fim=None):
     with conectar() as banco:
         banco.row_factory = sqlite3.Row
@@ -158,6 +113,8 @@ def buscar_media_por_hora(inicio=None, fim=None):
 # COLETOR (Arduino/DHT11 -> Banco)
 # =========================================================
 
+
+# tentando conectar no arduino
 def conectar_arduino(porta, baudrate=9600):
     import serial
     while True:
@@ -170,7 +127,7 @@ def conectar_arduino(porta, baudrate=9600):
                   f"Tentando de novo em {INTERVALO_RECONEXAO_SEGUNDOS}s...")
             time.sleep(INTERVALO_RECONEXAO_SEGUNDOS)
 
-
+# conectando com a porta USB do arduino
 def opcao_coletar():
     import serial
 
@@ -217,6 +174,7 @@ def opcao_coletar():
 # RELATÓRIOS / GRÁFICOS (tudo no terminal)
 # =========================================================
 
+# pendindo data/hora pro usuario
 def pedir_periodo():
     """Pergunta um período opcional. Enter em branco = sem filtro."""
     print("\n(deixe em branco pra não filtrar por data)")
@@ -224,7 +182,7 @@ def pedir_periodo():
     fim = input("Data/hora fim    (YYYY-MM-DD HH:MM:SS): ").strip() or None
     return inicio, fim
 
-
+# fazendo as estatisticas
 def opcao_estatisticas():
     inicio, fim = pedir_periodo()
     stats = buscar_estatisticas(inicio=inicio, fim=fim)
@@ -243,7 +201,7 @@ def opcao_estatisticas():
     print(f"Umidade média         : {stats['umidade_media']:.1f} %")
     print("====================================\n")
 
-
+# fazendo o grafico
 def opcao_grafico():
     try:
         import matplotlib.pyplot as plt
@@ -275,24 +233,24 @@ def opcao_grafico():
     passo_rotulo = max(1, len(eixo_x) // 15)
 
     fig, eixo1 = plt.subplots(figsize=(10, 5))
-    eixo1.plot(eixo_x, temperatura, color="tab:red", label="Temperatura (°C)")
+    eixo1.plot(eixo_x, temperatura, color="tab:pink", label="Temperatura (°C)")
     eixo1.set_xlabel("Data/hora")
-    eixo1.set_ylabel("Temperatura (°C)", color="tab:red")
-    eixo1.tick_params(axis="y", labelcolor="tab:red")
+    eixo1.set_ylabel("Temperatura (°C)", color="tab:pink")
+    eixo1.tick_params(axis="y", labelcolor="tab:pink")
     eixo1.set_xticks(eixo_x[::passo_rotulo])
     eixo1.set_xticklabels(eixo_x[::passo_rotulo], rotation=45, ha="right", fontsize=8)
 
     eixo2 = eixo1.twinx()
-    eixo2.plot(eixo_x, umidade, color="tab:blue", label="Umidade (%)")
-    eixo2.set_ylabel("Umidade (%)", color="tab:blue")
-    eixo2.tick_params(axis="y", labelcolor="tab:blue")
+    eixo2.plot(eixo_x, umidade, color="tab:green", label="Umidade (%)")
+    eixo2.set_ylabel("Umidade (%)", color="tab:green")
+    eixo2.tick_params(axis="y", labelcolor="tab:green")
 
     plt.title("Histórico de temperatura e umidade (DHT11)")
     fig.tight_layout()
     print("\nAbrindo janela do gráfico... (feche a janela pra voltar ao menu)")
     plt.show()
 
-
+# exportando o arquivo.csv
 def opcao_exportar_csv():
     inicio, fim = pedir_periodo()
     dados = buscar_leituras(inicio=inicio, fim=fim)
@@ -319,6 +277,8 @@ def opcao_exportar_csv():
 # MENU PRINCIPAL
 # =========================================================
 
+
+# fazendo o menu com print
 def mostrar_menu():
     print("""
 ================= SISTEMA DHT11 (TEMP/UMIDADE) =================
@@ -329,7 +289,7 @@ def mostrar_menu():
  5) Sair
 ===================================================================""")
 
-
+# escolhendo opção
 def main():
     criar_tabela()
     while True:
