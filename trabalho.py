@@ -42,7 +42,7 @@ def inserir_leitura(data_hora, umidade, temperatura):
         )
         banco.commit()
 
-# montando where, ele pega a data e usa para fazer o where(where = filtro)
+# montando where, ele pega a data e usa para preparar(nao usar, preparar) o where(where = filtro)
 def _montar_where(inicio, fim):
     condicoes, parametros = [], []
     if inicio:
@@ -54,7 +54,7 @@ def _montar_where(inicio, fim):
     where = f"WHERE {' AND '.join(condicoes)}" if condicoes else ""
     return where, parametros
 
-# nao sei
+# busca oq o usuario pediu
 def buscar_leituras(inicio=None, fim=None, limite=1_000_000):
     with conectar() as banco:
         banco.row_factory = sqlite3.Row
