@@ -127,11 +127,11 @@ def conectar_arduino(porta, baudrate=9600):
                   f"Tentando de novo em {INTERVALO_RECONEXAO_SEGUNDOS}s...")
             time.sleep(INTERVALO_RECONEXAO_SEGUNDOS)
 
-# conectando com a porta USB do arduino
+# Coletando dados do Arduino 
 def opcao_coletar():
     import serial
 
-    porta = input("Digite a porta do Arduino, exemplo COM3: ").strip()
+    porta = input("Digite a porta do Arduino, exemplo COM3: ").strip().upper()
     arduino = conectar_arduino(porta)
 
     print("Coletando dados do DHT11. Pressione Ctrl+C para parar e voltar ao menu.\n")
