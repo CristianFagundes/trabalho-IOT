@@ -87,7 +87,7 @@ def buscar_estatisticas(inicio=None, fim=None):
             FROM leituras
             {where}
         """, parametros)
-        return dict(cursor.fetchone())
+        return dict(cursor.fetchone()) # Devolve esse resumo calculado em uma lista de dados fácil de ler.
 
 # buscando media por hora
 def buscar_media_por_hora(inicio=None, fim=None):
