@@ -43,6 +43,7 @@ def inserir_leitura(data_hora, umidade, temperatura):
         banco.commit()
 
 # montando where, ele pega a data e usa para preparar(nao usar, preparar) o where(where = filtro)
+# É literelmente um filtro
 def _montar_where(inicio, fim):
     condicoes, parametros = [], []
     if inicio:
